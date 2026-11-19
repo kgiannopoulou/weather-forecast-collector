@@ -1,0 +1,64 @@
+x-app: &app
+  build: .
+  image: weather-forecast-collector:latest
+  env_file:
+    - path: .env
+      required: false
+  restart: unless-stopped
+
+x-db-env: &db-env
+  DB_CONNECTION: pgsql
+  DB_HOST: db
+  DB_PORT: 5432
+  DB_DATABASE: ${DB_DATABASE:-weather}
+  DB_USERNAME: ${DB_USERNAME:-weather}
+  DB_PASSWORD: ${DB_PASSWORD:-weather}
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-weather}
+      POSTGRES_USER: ${DB_USERNAME:-weather}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-weather}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${DB_FORWARD_PORT:-5441}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # Read API (also runs migrations + seeding on start).
+  app:
+    <<: *app
+    environment:
+      <<: *db-env
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "${APP_PORT:-8090}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/up"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Runs `forecasts:collect` on WEATHER_SCHEDULE_CRON (Laravel scheduler).
+  scheduler:
+    <<: *app
+    environment:
+      <<: *db-env
+      COLLECT_ON_START: "true"
+    command: ["php", "artisan", "schedule:work"]
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  pgdata:
